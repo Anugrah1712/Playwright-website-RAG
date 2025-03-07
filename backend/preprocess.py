@@ -4,8 +4,16 @@ from docx import Document as DocxDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document as LangchainDocument
 from fastapi import UploadFile
-import asyncio
-from playwright.async_api import async_playwright
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.docstore.in_memory import InMemoryDocstore  
+from langchain_community.vectorstores import FAISS
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+#from playwright.async_api import async_playwright
+
 async def preprocess_text(files: list[UploadFile], links, size, overlap):
     import time
     
@@ -27,23 +35,23 @@ async def preprocess_text(files: list[UploadFile], links, size, overlap):
                 if paragraph.text.strip():
                     paragraphs.append(paragraph.text)
 
-        # Step 2: Use Playwright for web scraping
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)  # <-- Await launch()
-            context = await browser.new_context()  # <-- Await new_context()
-            page = await context.new_page()  # <-- Await new_page()
+        # # Step 2: Use Playwright for web scraping
+        # async with async_playwright() as p:
+        #     browser = await p.chromium.launch(headless=True)  # <-- Await launch()
+        #     context = await browser.new_context()  # <-- Await new_context()
+        #     page = await context.new_page()  # <-- Await new_page()
 
-            for link in links:
-                try:
-                    await page.goto(link, timeout=60000)  # <-- Await page navigation
-                    await asyncio.sleep(3)  # Allow page to load
-                    body_text = await page.text_content("body")  # <-- Await text extraction
-                    paragraphs.extend(body_text.split("\n"))
+        #     for link in links:
+        #         try:
+        #             await page.goto(link, timeout=60000)  # <-- Await page navigation
+        #             await asyncio.sleep(3)  # Allow page to load
+        #             body_text = await page.text_content("body")  # <-- Await text extraction
+        #             paragraphs.extend(body_text.split("\n"))
 
-                except Exception as link_error:
-                    print(f"Failed to process link {link}: {link_error}")
+        #         except Exception as link_error:
+        #             print(f"Failed to process link {link}: {link_error}")
 
-            await browser.close()  # <-- Await browser close
+        #     await browser.close()  # <-- Await browser close
 
 
     # Step 3: Remove empty paragraphs
@@ -60,7 +68,7 @@ async def preprocess_text(files: list[UploadFile], links, size, overlap):
 
 def preprocess_chroma(text, embedding_model_name, persist_directory):
     from langchain_community.embeddings import SentenceTransformerEmbeddings
-    from langchain.vectorstores import Chroma
+    from langchain_community.vectorstores import Chroma
 
     embedding_model = SentenceTransformerEmbeddings(model_name=embedding_model_name)
     vectordb = Chroma.from_documents(documents=text, embedding=embedding_model, persist_directory=persist_directory)
@@ -113,6 +121,7 @@ def preprocess_weaviate(text, embedding_model_name):
     client = weaviate.connect_to_weaviate_cloud(
         cluster_url=weaviate_url,
         auth_credentials=AuthApiKey(weaviate_api_key),
+
     )
 
     vs = WeaviateVectorStore.from_documents(
@@ -120,6 +129,7 @@ def preprocess_weaviate(text, embedding_model_name):
         embedding=embedding_model,
         client=client
     )
+    client.close()
 
     return vs
 
@@ -179,13 +189,18 @@ async def preprocess_vectordbs(files: list[UploadFile], links, embedding_model_n
     from preprocess import preprocess_text, preprocess_chroma, preprocess_faiss, preprocess_weaviate, preprocess_pinecone #import local functions
 
     text = await preprocess_text(files, links, size, overlap)
+    # print(text)
     persist_directory = 'db'
 
     embedding_model_global = SentenceTransformerEmbeddings(model_name=embedding_model_name)
 
     vectordb, retriever = preprocess_chroma(text, embedding_model_name, persist_directory)
+    print("chroma db processing done")
     index, docstore, index_to_docstore_id, vector_store = preprocess_faiss(text, embedding_model_name)
+    print("faiss db processing done")
     vs = preprocess_weaviate(text, embedding_model_name)
+    print("weaviate db processing done")
     pinecone_index = preprocess_pinecone(text, embedding_model_name)
+    print("pinecone db processing done")
 
     return index, docstore, index_to_docstore_id, vector_store, retriever, pinecone_index, embedding_model_global, vs

@@ -1,12 +1,11 @@
-#Webscrape.py 
-
+# Webscrape.py
 import os
-import time
 import asyncio
 from playwright.async_api import async_playwright
 import google.generativeai as genai
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+# Configure Gemini API
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 generation_config = {
     "temperature": 1,
@@ -21,78 +20,79 @@ model = genai.GenerativeModel(
     generation_config=generation_config,
 )
 
-def convert_table_to_sentences_gemini(table_data, table_index):
-    """Converts table data into descriptive sentences using Gemini Generative AI."""
-    table_input = f"Table {table_index}:\n" + "\n".join(
-        [", ".join(row) for row in table_data]
+async def convert_table_to_sentences_gemini(tables):
+    """Converts multiple tables into descriptive sentences using Gemini API."""
+    print("\n[INFO] Sending tables to Gemini for conversion to sentences...\n")
+    table_input = "\n\n".join(
+        [f"Table {i}:\n" + "\n".join([", ".join(row) for row in data]) for i, data in enumerate(tables, 1)]
     )
 
-    chat_session = model.start_chat(
-        history=[
-            {"role": "user", "parts": [
-                "Convert table to descriptive sentences. For example: The following information is for the customers under the age of 60 with a special period.\n"
-                "● For customers with a tenure of 18 months, the interest rates are as follows: 7.80% per annum at maturity, 7.53% per annum for monthly interest, "
-                "7.58% per annum for quarterly interest, 7.65% per annum for half-yearly interest, and 7.80% per annum for annual interest.\n"
-                "● For a tenure of 22 months, the interest rates are 7.90% per annum at maturity, 7.63% per annum for monthly interest, "
-                "7.68% per annum for quarterly interest, 7.75% per annum for half-yearly interest, and 7.90% per annum for annual interest.\n"
-                "● For those with a 33-month tenure, the interest rates are 8.10% per annum at maturity, 7.81% per annum for monthly interest, "
-                "7.87% per annum for quarterly interest, 7.94% per annum for half-yearly interest, and 8.10% per annum for annual interest.\n"
-                "● Finally, for customers with a tenure of 44 months, the interest rates are 8.25% per annum at maturity, 7.95% per annum for monthly interest, "
-                "8.01% per annum for quarterly interest, 8.09% per annum for half-yearly interest, and 8.25% per annum for annual interest."
-            ]},
-            {"role": "model", "parts": ["Please provide the table. I need the table's content to convert it into descriptive sentences.\n"]},
-        ]
-    )
+    chat_session = model.start_chat()
+    response = chat_session.send_message(f"Convert these tables to descriptive sentences:\n{table_input}")
+    
+    return response.text if response else "No response from Gemini API"
 
-    response = chat_session.send_message(table_input)
-    return response.text
+async def scrape_web_data(links):
+    print("[INFO] Starting web scraping...\n")
 
-async def scrape_web_data():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)  # Set to True to run in headless mode
+        browser = await p.chromium.launch(headless=False)  # Set headless=True for better performance
         page = await browser.new_page()
 
-        await page.goto(
-            "https://www.bajajfinserv.in/investments/fixed-deposit-application-form?&utm_source=googleperformax_mktg&utm_medium=cpc&PartnerCode=76783&utm_campaign=DPPM_FD_OB_22072024_Vserv_PerfMax_Salaried&utm_term=&device=c&utm_location=9062096&utm_placement=&gad_source=1&gclid=EAIaIQobChMIo6z7toz3iQMV8uYWBR3D0jMGEAAYASAAEgKAdvD_BwE"
-        )
-        await page.wait_for_timeout(3000)
+       
+        print(f"[INFO] Navigating to {links}\n")
 
+        for link in links:
+            print(f"[INFO] Navigating to {link}\n")
+            await page.goto(link, timeout=120000, wait_until="domcontentloaded")
+
+
+        # Extract Tables
         tables = await page.query_selector_all("table")
+        table_data = []
 
-        for i, table in enumerate(tables, start=1):
-            print(f"Processing Table {i}:")
-            
+        for i, table in enumerate(tables, 1):
             rows = await table.query_selector_all("tr")
-            table_data = []
+            table_content = []
 
             for row in rows:
-                columns = await row.query_selector_all("td")
+                columns = await row.query_selector_all("td, th")  # Include headers
                 column_text = [await column.inner_text() for column in columns]
                 column_text = [text.strip() for text in column_text if text.strip()]
                 if column_text:
-                    table_data.append(column_text)
+                    table_content.append(column_text)
 
-            if table_data:
-                descriptive_sentences = convert_table_to_sentences_gemini(table_data, i)
-                print(f"Descriptive Sentences for Table {i}:\n{descriptive_sentences}\n")
+            if table_content:
+                table_data.append(table_content)
 
-        body_text = await page.evaluate("document.body.innerText")
+        # Print extracted tables
+        if table_data:
+            print("\n[INFO] Extracted Tables:\n")
+            for i, table in enumerate(table_data, 1):
+                print(f"\nTable {i}:\n")
+                for row in table:
+                    print("\t".join(row))
+                print("\n" + "-" * 50)
+
+            descriptive_sentences = await convert_table_to_sentences_gemini(table_data)
+            print(f"\n[INFO] Descriptive Sentences:\n{descriptive_sentences}\n")
+
+        # Extract FAQs
         faq_container = await page.query_selector(".faqs.aem-GridColumn.aem-GridColumn--default--12")
 
         if faq_container:
-            while True:
-                try:
-                    show_more_button = await faq_container.query_selector(".accordion_toggle_show-more")
-                    if show_more_button and await show_more_button.is_visible():
-                        await show_more_button.click()
-                        await page.wait_for_timeout(1000)
-                    else:
-                        break
-                except Exception:
+            print("\n[INFO] Extracting FAQs...\n")
+            for _ in range(10):  # Avoid infinite loop
+                show_more_button = await faq_container.query_selector(".accordion_toggle_show-more")
+                if show_more_button and await show_more_button.is_visible():
+                    await show_more_button.click()
+                    await page.wait_for_timeout(1000)
+                else:
                     break
 
             toggle_buttons = await faq_container.query_selector_all(".accordion_toggle, .accordion_row")
             all_faqs = []
+
             for button in toggle_buttons:
                 try:
                     await button.click()
@@ -107,17 +107,29 @@ async def scrape_web_data():
                             if question:
                                 all_faqs.append({"question": question, "answer": text})
                 except Exception as e:
-                    print(f"Error interacting with button: {e}")
+                    print(f"[ERROR] Error interacting with button: {e}")
 
-            print("\nExtracted FAQ Questions and Answers:")
-            for i, faq in enumerate(all_faqs, start=1):
-                print(f"Q: {faq['question']}\n   A: {faq['answer']}\n")
+            # Print extracted FAQs
+            if all_faqs:
+                print("\n[INFO] Extracted FAQ Questions and Answers:\n")
+                for i, faq in enumerate(all_faqs, 1):
+                    print(f"Q{i}: {faq['question']}\n   A: {faq['answer']}\n")
 
-        print("Entire Page Content:")
-        print(body_text)
+        # Extract Full Page Text
+        print("\n[INFO] Extracting Full Page Content...\n")
+        body_text = await page.evaluate("document.body.innerText")
+        print("\n[INFO] First 1000 characters of the page content:\n")
+        print(body_text[:1000])  # Print first 1000 characters to avoid overload
 
         await browser.close()
+        print("\n[INFO] Web scraping completed!\n")
 
+# Run the scraper
+import asyncio
 
-    
-#uvicorn main:app --reload
+async def main():
+    await scrape_web_data()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
